@@ -8,6 +8,8 @@ REPO="alejpaa/openmousefix"
 APP_NAME="OpenMouseFix"
 BUNDLE_ID="io.github.alejpaa.openmousefix"
 DEST="/Applications/$APP_NAME.app"
+# Optional: build a specific branch/tag from source instead of the latest release (for testing).
+REF="${OPENMOUSEFIX_REF:-}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -35,18 +37,18 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# 1) Prebuilt app from the latest GitHub release.
-if curl -fsSL -o "$TMP/app.zip" "https://github.com/$REPO/releases/latest/download/$APP_NAME.zip" 2>/dev/null; then
+# 1) Prebuilt app from the latest GitHub release (skipped when a source ref is requested).
+if [[ -z "$REF" ]] && curl -fsSL -o "$TMP/app.zip" "https://github.com/$REPO/releases/latest/download/$APP_NAME.zip" 2>/dev/null; then
   info "Descargada la última versión publicada."
   ditto -x -k "$TMP/app.zip" "$TMP"
 else
   # 2) No release yet: build from source (needs Command Line Tools).
-  info "No hay versión publicada; compilando desde el código fuente…"
+  info "Compilando desde el código fuente${REF:+ ($REF)}…"
   if ! xcode-select -p >/dev/null 2>&1; then
     xcode-select --install >/dev/null 2>&1 || true
     fail "Faltan las Command Line Tools. Termina su instalación y vuelve a ejecutar este comando."
   fi
-  git clone --depth 1 "https://github.com/$REPO.git" "$TMP/src" >/dev/null 2>&1 \
+  git clone --depth 1 ${REF:+--branch "$REF"} "https://github.com/$REPO.git" "$TMP/src" >/dev/null 2>&1 \
     || fail "No se pudo descargar el código fuente."
   (cd "$TMP/src" && ./build.sh) || fail "La compilación falló."
   mv "$TMP/src/build/$APP_NAME.app" "$TMP/"
