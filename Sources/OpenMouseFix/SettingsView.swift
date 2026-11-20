@@ -76,7 +76,11 @@ struct SettingsView: View {
             ButtonSection(title: "Botón central", config: $settings.middleButton)
 
             Section("Gestos") {
-                LabeledContent("Distancia mínima") {
+                Toggle("Invertir dirección de los gestos", isOn: $settings.invertGestures)
+                Toggle("Bloquear el cursor durante los gestos", isOn: $settings.lockCursorDuringGestures)
+                Text("Cambiar de escritorio, Mission Control y App Exposé siguen al ratón como en el trackpad.")
+                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Distancia mínima (otras acciones)") {
                     HStack {
                         Slider(value: $settings.dragThreshold, in: 20...200)
                         Text("\(Int(settings.dragThreshold)) pt")

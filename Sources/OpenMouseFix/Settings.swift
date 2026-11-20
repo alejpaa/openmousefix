@@ -88,6 +88,11 @@ final class Settings: ObservableObject {
 
     /// Minimum drag distance (points) to trigger a gesture. Default 60.
     @Published var dragThreshold: Double { didSet { d.set(dragThreshold, forKey: "dragThreshold") } }
+    /// Flips the direction of interactive (trackpad-like) swipes.
+    /// Stored under a new key: the default direction was flipped, so old "invertGestures" values are ignored.
+    @Published var invertGestures: Bool { didSet { d.set(invertGestures, forKey: "reverseGestures") } }
+    /// Keep the cursor still while a drag gesture is in progress. Default off (like Mac Mouse Fix).
+    @Published var lockCursorDuringGestures: Bool { didSet { d.set(lockCursorDuringGestures, forKey: "lockCursorDuringGestures") } }
 
     private init() {
         enabled = d.object(forKey: "enabled") as? Bool ?? true
@@ -98,6 +103,8 @@ final class Settings: ObservableObject {
         reverseMouse = d.object(forKey: "reverseMouse") as? Bool ?? true
         reverseTrackpad = d.object(forKey: "reverseTrackpad") as? Bool ?? false
         dragThreshold = d.object(forKey: "dragThreshold") as? Double ?? 60
+        invertGestures = d.object(forKey: "reverseGestures") as? Bool ?? false
+        lockCursorDuringGestures = d.object(forKey: "lockCursorDuringGestures") as? Bool ?? false
         middleButton = Settings.load("middleButton") ?? .plain
         button4 = Settings.load("button4") ?? .gestures(click: .back)
         button5 = Settings.load("button5") ?? .gestures(click: .forward)

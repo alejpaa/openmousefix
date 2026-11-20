@@ -8,8 +8,9 @@ if [[ "${UNIVERSAL:-0}" == "1" ]]; then
   swift build -c release --arch arm64 --arch x86_64
   BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/OpenMouseFix"
 else
-  swift build -c release --arch arm64
-  BIN="$(swift build -c release --arch arm64 --show-bin-path)/OpenMouseFix"
+  ARCH="$(uname -m)"   # arm64 or x86_64
+  swift build -c release --arch "$ARCH"
+  BIN="$(swift build -c release --arch "$ARCH" --show-bin-path)/OpenMouseFix"
 fi
 
 rm -rf "$APP"

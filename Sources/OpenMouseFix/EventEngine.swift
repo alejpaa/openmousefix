@@ -18,7 +18,19 @@ final class EventEngine {
         var dx: Double = 0
         var dy: Double = 0
         var fired = false
+        /// Set once the drag moved far enough to be considered a gesture.
+        var locked = false
+        /// Non-nil while an interactive (trackpad-like) swipe is in progress.
+        var swipe: DockSwipe.Axis?
+        /// +1/-1: maps raw mouse movement to DockSwipe delta direction.
+        var swipeSign: Double = 1
+        /// Gesture units per point of mouse movement for the active swipe axis.
+        var swipeScale: Double = 1
     }
+
+    /// Distance (pt) after which a drag counts as a gesture (and the cursor locks, if enabled).
+    private let lockDistance = 6.0
+    private var cursorFrozen = false
     private var active: ActiveButton?
 
     var isRunning: Bool {
@@ -56,7 +68,7 @@ final class EventEngine {
         }
         tap = nil
         source = nil
-        active = nil
+        endActiveGesture()
     }
 
     // MARK: - Dispatch
@@ -138,6 +150,7 @@ final class EventEngine {
         case .otherMouseDown:
             // A new press replaces any tracked button, so a lost mouse-up (e.g. tap disabled)
             // can never leave the engine stuck.
+            endActiveGesture(cancel: true)
             guard let config = Settings.shared.config(forButton: number) else { return true }
             if config.click == .passthrough && !config.dragEnabled { return true }
             active = ActiveButton(number: number, config: config)
@@ -145,32 +158,88 @@ final class EventEngine {
 
         case .otherMouseDragged:
             guard var a = active, a.number == number else { return true }
-            if a.config.dragEnabled && !a.fired {
-                a.dx += event.getDoubleValueField(.mouseEventDeltaX)
-                a.dy += event.getDoubleValueField(.mouseEventDeltaY)
-                if hypot(a.dx, a.dy) >= Settings.shared.dragThreshold {
-                    let action: MouseAction
-                    if abs(a.dx) > abs(a.dy) {
-                        action = a.dx < 0 ? a.config.dragLeft : a.config.dragRight
-                    } else {
-                        action = a.dy < 0 ? a.config.dragUp : a.config.dragDown
-                    }
+            guard a.config.dragEnabled else { return false }
+            let ddx = event.getDoubleValueField(.mouseEventDeltaX)
+            let ddy = event.getDoubleValueField(.mouseEventDeltaY)
+            a.dx += ddx
+            a.dy += ddy
+
+            if !a.locked && hypot(a.dx, a.dy) >= lockDistance {
+                a.locked = true
+                if Settings.shared.lockCursorDuringGestures { freezeCursor(true) }
+                let horizontal = abs(a.dx) > abs(a.dy)
+                if let (axis, sign) = interactiveAxis(a.config, horizontal: horizontal) {
+                    let natural = DockSwipe.systemNaturalDirection
+                    let effectiveSign = sign * (natural ? 1.0 : -1.0)
+                    let swipeScale = DockSwipe.scale(for: axis)
+                    a.swipe = axis
+                    a.swipeSign = effectiveSign
+                    a.swipeScale = swipeScale
                     a.fired = true
-                    dispatch(action, button: number, location: event.location)
+                    let initial = (horizontal ? a.dx : a.dy) * effectiveSign * swipeScale
+                    DispatchQueue.main.async {
+                        DockSwipe.begin(axis, delta: initial, invertedFromDevice: natural)
+                    }
                 }
+            } else if let axis = a.swipe {
+                let d = (axis == .horizontal ? ddx : ddy) * a.swipeSign * a.swipeScale
+                if d != 0 {
+                    DispatchQueue.main.async { DockSwipe.change(d) }
+                }
+            }
+
+            if a.swipe == nil && !a.fired && hypot(a.dx, a.dy) >= Settings.shared.dragThreshold {
+                let action: MouseAction
+                if abs(a.dx) > abs(a.dy) {
+                    action = a.dx < 0 ? a.config.dragLeft : a.config.dragRight
+                } else {
+                    action = a.dy < 0 ? a.config.dragUp : a.config.dragDown
+                }
+                a.fired = true
+                dispatch(action, button: number, location: event.location)
             }
             active = a
             return false
 
         case .otherMouseUp:
             guard let a = active, a.number == number else { return true }
-            active = nil
+            endActiveGesture(cancel: false)
             if !a.fired { dispatch(a.config.click, button: number, location: event.location) }
             return false
 
         default:
             return true
         }
+    }
+
+    /// If the configured actions for this axis are the ones a trackpad swipe performs,
+    /// returns the dock-swipe axis and the sign that maps mouse movement onto it.
+    private func interactiveAxis(_ c: ButtonConfig, horizontal: Bool) -> (DockSwipe.Axis, Double)? {
+        // Default: the content follows the mouse (drag left → Space on the left).
+        let invert = Settings.shared.invertGestures ? 1.0 : -1.0
+        if horizontal {
+            if c.dragLeft == .spaceLeft && c.dragRight == .spaceRight { return (.horizontal, -invert) }
+            if c.dragLeft == .spaceRight && c.dragRight == .spaceLeft { return (.horizontal, invert) }
+        } else {
+            if c.dragUp == .missionControl && c.dragDown == .appExpose { return (.vertical, invert) }
+            if c.dragUp == .appExpose && c.dragDown == .missionControl { return (.vertical, -invert) }
+        }
+        return nil
+    }
+
+    private func endActiveGesture(cancel: Bool = true) {
+        if active?.swipe != nil {
+            DispatchQueue.main.async { DockSwipe.end(cancel: cancel) }
+        }
+        active = nil
+        freezeCursor(false)
+    }
+
+    /// Keeps the cursor still during a gesture (mouse deltas still arrive).
+    private func freezeCursor(_ on: Bool) {
+        guard on != cursorFrozen else { return }
+        cursorFrozen = on
+        CGAssociateMouseAndMouseCursorPosition(on ? 0 : 1)
     }
 
     /// Actions post synthetic events, which must not happen inside the tap callback.
