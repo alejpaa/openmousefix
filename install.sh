@@ -25,7 +25,7 @@ SUDO=""
 quit_app() { pkill -x "$APP_NAME" 2>/dev/null || true; sleep 0.5; }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
-  info "Desinstalando $APP_NAME…"
+  info "Desinstalando ${APP_NAME}…"
   quit_app
   $SUDO rm -rf "$DEST"
   tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -56,7 +56,7 @@ fi
 
 [[ -d "$TMP/$APP_NAME.app" ]] || fail "No se encontró $APP_NAME.app."
 
-info "Instalando en $DEST…"
+info "Instalando en ${DEST}…"
 quit_app
 $SUDO rm -rf "$DEST"
 $SUDO ditto "$TMP/$APP_NAME.app" "$DEST"
