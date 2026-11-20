@@ -8,7 +8,7 @@ REPO="alejpaa/openmousefix"
 APP_NAME="OpenMouseFix"
 BUNDLE_ID="io.github.alejpaa.openmousefix"
 DEST="/Applications/$APP_NAME.app"
-# Optional: build a specific branch/tag from source instead of the latest release (for testing).
+# Optional: build a specific branch or tag (not a commit SHA) from source instead of the latest release.
 REF="${OPENMOUSEFIX_REF:-}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -18,11 +18,22 @@ fail() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 major="$(sw_vers -productVersion | cut -d. -f1)"
 (( major >= 13 )) || fail "Se necesita macOS 13 o superior."
 
-# Use sudo only if /Applications is not writable by this user.
+# Use sudo only if this user can't write /Applications or an existing install (e.g. owned by root).
 SUDO=""
-[[ -w /Applications ]] || SUDO="sudo"
+if [[ ! -w /Applications ]] || { [[ -e "$DEST" ]] && [[ ! -w "$DEST" || ! -w "$DEST/Contents" ]]; }; then
+  SUDO="sudo"
+fi
 
-quit_app() { pkill -x "$APP_NAME" 2>/dev/null || true; sleep 0.5; }
+# Quit the running app and wait until it has really exited.
+quit_app() {
+  pkill -x "$APP_NAME" 2>/dev/null || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x "$APP_NAME" >/dev/null || return 0
+    sleep 0.2
+  done
+  pkill -9 -x "$APP_NAME" 2>/dev/null || true
+  sleep 0.2
+}
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   info "Desinstalando ${APP_NAME}…"
@@ -37,21 +48,34 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# 1) Prebuilt app from the latest GitHub release (skipped when a source ref is requested).
-if [[ -z "$REF" ]] && curl -fsSL -o "$TMP/app.zip" "https://github.com/$REPO/releases/latest/download/$APP_NAME.zip" 2>/dev/null; then
-  info "Descargada la última versión publicada."
-  ditto -x -k "$TMP/app.zip" "$TMP"
-else
-  # 2) No release yet: build from source (needs Command Line Tools).
+build_from_source() {
   info "Compilando desde el código fuente${REF:+ ($REF)}…"
-  if ! xcode-select -p >/dev/null 2>&1; then
+  if ! xcrun --find swift >/dev/null 2>&1; then
     xcode-select --install >/dev/null 2>&1 || true
     fail "Faltan las Command Line Tools. Termina su instalación y vuelve a ejecutar este comando."
   fi
   git clone --depth 1 ${REF:+--branch "$REF"} "https://github.com/$REPO.git" "$TMP/src" >/dev/null 2>&1 \
-    || fail "No se pudo descargar el código fuente."
+    || fail "No se pudo descargar el código fuente${REF:+ (¿existe la rama o etiqueta '$REF'?)}."
   (cd "$TMP/src" && ./build.sh) || fail "La compilación falló."
   mv "$TMP/src/build/$APP_NAME.app" "$TMP/"
+}
+
+if [[ -n "$REF" ]]; then
+  build_from_source
+else
+  # 1) Prebuilt app from the latest GitHub release (a few seconds).
+  status="$(curl -sSL -w '%{http_code}' -o "$TMP/app.zip" \
+    "https://github.com/$REPO/releases/latest/download/$APP_NAME.zip" 2>/dev/null || true)"
+  case "$status" in
+    200)
+      info "Descargada la última versión publicada."
+      ditto -x -k "$TMP/app.zip" "$TMP" ;;
+    404)
+      # 2) No release published yet: build from source.
+      build_from_source ;;
+    *)
+      fail "No se pudo descargar la app (HTTP ${status:-sin conexión}). Comprueba tu conexión e inténtalo de nuevo." ;;
+  esac
 fi
 
 [[ -d "$TMP/$APP_NAME.app" ]] || fail "No se encontró $APP_NAME.app."
