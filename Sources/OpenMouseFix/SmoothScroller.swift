@@ -1,12 +1,20 @@
 import Foundation
 import CoreGraphics
 
-/// Turns discrete wheel ticks into a stream of small pixel-based scroll events
-/// with optional acceleration. Main-thread only.
+/// Turns discrete wheel ticks into a stream of trackpad-like pixel scroll events
+/// with gesture/momentum phases and optional acceleration. Main-thread only.
 final class SmoothScroller {
+    private enum PhaseState {
+        case idle
+        case gesture(beganSent: Bool)
+        case momentum
+    }
+
     private var pendingX = 0.0, pendingY = 0.0   // distance (px) still to emit
     private var remX = 0.0, remY = 0.0           // sub-pixel remainders carried between frames
     private var timer: Timer?
+    private var state: PhaseState = .idle
+    private var lastTickTime = 0.0
 
     // Acceleration state, per axis.
     private var streakX = 0, streakY = 0
@@ -16,27 +24,48 @@ final class SmoothScroller {
     private let baseStep = 40.0
     private let streakWindow = 0.120
     private let maxStreak = 12
+    private let gestureHold = 0.040
 
     /// dx/dy are tick directions (-1, 0, +1).
     func add(dx: Double, dy: Double) {
         let now = ProcessInfo.processInfo.systemUptime
         let s = Settings.shared
+
+        switch state {
+        case .idle:
+            state = .gesture(beganSent: false)
+        case .gesture:
+            break
+        case .momentum:
+            // Cleanly end ongoing momentum before starting a new gesture.
+            GestureScroll.postMomentum(dx: 0, dy: 0, phase: .end)
+            state = .gesture(beganSent: false)
+        }
+        lastTickTime = now
+
         if dy != 0 {
-            pendingY = push(dir: dy, pending: pendingY, now: now, accel: s.acceleration,
-                            streak: &streakY, last: &lastTickY, lastDir: &lastDirY)
+            pendingY = push(dir: dy, pending: pendingY, rem: &remY, now: now, accel: s.acceleration,
+                            streak: &streakY, last: &lastTickY, lastDir: &lastDirY,
+                            onReverse: GestureScroll.resetSubPixelatorY)
         }
         if dx != 0 {
-            pendingX = push(dir: dx, pending: pendingX, now: now, accel: s.acceleration,
-                            streak: &streakX, last: &lastTickX, lastDir: &lastDirX)
+            pendingX = push(dir: dx, pending: pendingX, rem: &remX, now: now, accel: s.acceleration,
+                            streak: &streakX, last: &lastTickX, lastDir: &lastDirX,
+                            onReverse: GestureScroll.resetSubPixelatorX)
         }
         startTimerIfNeeded()
     }
 
-    private func push(dir: Double, pending: Double, now: Double, accel: Bool,
-                      streak: inout Int, last: inout Double, lastDir: inout Double) -> Double {
+    private func push(dir: Double, pending: Double, rem: inout Double, now: Double, accel: Bool,
+                      streak: inout Int, last: inout Double, lastDir: inout Double,
+                      onReverse: () -> Void) -> Double {
         var pending = pending
         // Direction reversal: discard what was still gliding the other way.
-        if pending != 0 && (pending > 0) != (dir > 0) { pending = 0 }
+        if pending != 0 && (pending > 0) != (dir > 0) {
+            pending = 0
+            rem = 0
+            onReverse()
+        }
 
         if now - last <= streakWindow && dir == lastDir {
             streak = min(streak + 1, maxStreak)
@@ -63,12 +92,43 @@ final class SmoothScroller {
     }
 
     private func frame() {
+        let now = ProcessInfo.processInfo.systemUptime
         let f = 0.35 - Settings.shared.smoothness * 0.27
         let outX = step(&pendingX, &remX, fraction: f)
         let outY = step(&pendingY, &remY, fraction: f)
-        if outX != 0 || outY != 0 { post(dx: outX, dy: outY) }
+
+        if outX != 0 || outY != 0 {
+            switch state {
+            case .idle, .gesture(beganSent: false):
+                GestureScroll.resetSubPixelator()
+                GestureScroll.postGesture(dx: outX, dy: outY, phase: .began)
+                state = .gesture(beganSent: true)
+            case .gesture(beganSent: true):
+                if now - lastTickTime >= gestureHold {
+                    GestureScroll.postGesture(dx: 0, dy: 0, phase: .ended)
+                    GestureScroll.resetSubPixelator()
+                    GestureScroll.postMomentum(dx: outX, dy: outY, phase: .begin)
+                    state = .momentum
+                } else {
+                    GestureScroll.postGesture(dx: outX, dy: outY, phase: .changed)
+                }
+            case .momentum:
+                GestureScroll.postMomentum(dx: outX, dy: outY, phase: .continuous)
+            }
+            return
+        }
+
         if abs(pendingX) < 0.01 && abs(pendingY) < 0.01 {
             pendingX = 0; pendingY = 0; remX = 0; remY = 0
+            switch state {
+            case .idle, .gesture(beganSent: false):
+                break
+            case .gesture(beganSent: true):
+                GestureScroll.postGesture(dx: 0, dy: 0, phase: .ended)
+            case .momentum:
+                GestureScroll.postMomentum(dx: 0, dy: 0, phase: .end)
+            }
+            state = .idle
             stopTimer()
         }
     }
@@ -83,13 +143,5 @@ final class SmoothScroller {
         let whole = total.rounded(.towardZero)
         rem = total - whole
         return Int32(whole)
-    }
-
-    private func post(dx: Int32, dy: Int32) {
-        guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                              wheel1: dy, wheel2: dx, wheel3: 0) else { return }
-        e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        e.setIntegerValueField(.eventSourceUserData, value: kOpenMouseFixMagic)
-        e.post(tap: .cgSessionEventTap)
     }
 }
